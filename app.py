@@ -268,11 +268,10 @@ elif menu=="Inserimento":
 
 # ---------------- CICLI ----------------
 elif menu=="Cicli":
-    st.title("Editor cicli avanzato")
+elif menu=="Cicli":
+    st.title("Editor cicli PRO")
 
-    # articoli esistenti
     articoli = pd.read_sql("SELECT articolo FROM cicli", conn)["articolo"].tolist()
-
     art = st.text_input("Articolo")
 
     # stato persistente
@@ -280,7 +279,6 @@ elif menu=="Cicli":
         st.session_state.ciclo_temp = []
         st.session_state.art_corrente = None
 
-    # cambio articolo → carica ciclo o vuoto
     if art != st.session_state.art_corrente:
         st.session_state.art_corrente = art
 
@@ -289,60 +287,115 @@ elif menu=="Cicli":
         else:
             st.session_state.ciclo_temp = []
 
-    # ---------------- VISUALIZZAZIONE ----------------
-    st.subheader("Fasi di lavorazione")
+    # ---------------- TABELLA ----------------
+    st.subheader("Ciclo lavorazione")
 
     if st.session_state.ciclo_temp:
         df_ciclo = pd.DataFrame({
-            "Ordine": range(1, len(st.session_state.ciclo_temp)+1),
-            "Fase": st.session_state.ciclo_temp
+            "Step": range(1, len(st.session_state.ciclo_temp)+1),
+            "Macchina": st.session_state.ciclo_temp
         })
         st.dataframe(df_ciclo, use_container_width=True)
     else:
-        st.info("Nessuna fase inserita")
+        st.info("Ciclo vuoto")
 
     st.divider()
 
-    # ---------------- DRAG & DROP ----------------
+    # ---------------- DRAG ----------------
     st.subheader("Riordina (drag & drop)")
-
     if st.session_state.ciclo_temp:
-        nuovo = sort_items(st.session_state.ciclo_temp)
-        st.session_state.ciclo_temp = nuovo
+        st.session_state.ciclo_temp = sort_items(st.session_state.ciclo_temp)
 
     st.divider()
 
-    # ---------------- AGGIUNTA ----------------
-    st.subheader("Aggiungi fase")
+    # ---------------- INSERIMENTO POSIZIONE ----------------
+    st.subheader("Inserisci fase in posizione")
 
-    nuova = st.selectbox("Macchina", FASI)
+    col1, col2 = st.columns(2)
 
-    if st.button("➕ Aggiungi"):
-        st.session_state.ciclo_temp.append(nuova)
+    nuova = col1.selectbox("Macchina", FASI)
+    pos = col2.number_input(
+        "Posizione",
+        min_value=1,
+        max_value=len(st.session_state.ciclo_temp)+1,
+        value=len(st.session_state.ciclo_temp)+1
+    )
+
+    if st.button("➕ Inserisci fase"):
+        st.session_state.ciclo_temp.insert(int(pos)-1, nuova)
         st.rerun()
 
+    # ---------------- MODIFICA ----------------
+    st.subheader("Modifica fase")
+
+    if st.session_state.ciclo_temp:
+        idx = st.number_input(
+            "Seleziona step",
+            min_value=1,
+            max_value=len(st.session_state.ciclo_temp),
+            value=1
+        )
+
+        nuova_val = st.selectbox("Nuova macchina", FASI, key="edit")
+
+        if st.button("✏️ Modifica"):
+            st.session_state.ciclo_temp[int(idx)-1] = nuova_val
+            st.rerun()
+
     # ---------------- RIMOZIONE ----------------
-    if st.button("❌ Rimuovi ultima"):
-        if st.session_state.ciclo_temp:
-            st.session_state.ciclo_temp.pop()
+    st.subheader("Rimuovi fase")
+
+    if st.session_state.ciclo_temp:
+        idx_del = st.number_input(
+            "Step da eliminare",
+            min_value=1,
+            max_value=len(st.session_state.ciclo_temp),
+            value=1,
+            key="delete"
+        )
+
+        if st.button("❌ Elimina"):
+            st.session_state.ciclo_temp.pop(int(idx_del)-1)
             st.rerun()
 
     st.divider()
 
     # ---------------- COPIA ----------------
-    st.subheader("Copia ciclo da altro articolo")
+    st.subheader("Copia ciclo")
 
-    copia = st.selectbox("Seleziona articolo", [""] + articoli)
+    copia = st.selectbox("Da articolo", [""] + articoli)
 
     if st.button("📥 Copia ciclo"):
         if copia:
             st.session_state.ciclo_temp = get_ciclo(copia)
-            st.success(f"Ciclo copiato da {copia}")
+            st.success(f"Copiato da {copia}")
+            st.rerun()
+
+    # ---------------- DUPLICA ----------------
+    st.subheader("Duplica fase")
+
+    if st.session_state.ciclo_temp:
+        idx_dup = st.number_input(
+            "Step da duplicare",
+            min_value=1,
+            max_value=len(st.session_state.ciclo_temp),
+            value=1,
+            key="dup"
+        )
+
+        if st.button("📑 Duplica"):
+            fase = st.session_state.ciclo_temp[int(idx_dup)-1]
+            st.session_state.ciclo_temp.insert(int(idx_dup), fase)
             st.rerun()
 
     st.divider()
 
-    # ---------------- SALVATAGGIO ----------------
+    # ---------------- RESET ----------------
+    if st.button("🧹 Reset ciclo"):
+        st.session_state.ciclo_temp = []
+        st.rerun()
+
+    # ---------------- SALVA ----------------
     if st.button("💾 Salva ciclo"):
         if art:
             c.execute(
@@ -350,7 +403,7 @@ elif menu=="Cicli":
                 (art, "|".join(st.session_state.ciclo_temp))
             )
             conn.commit()
-            st.success("Ciclo salvato")
+            st.success("Ciclo salvato correttamente")
 
 # ---------------- SETUP ----------------
 elif menu=="Setup":
