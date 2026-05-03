@@ -196,45 +196,74 @@ elif menu=="Calendario":
         """, height=500)
 
 # ---------------- CICLI ----------------
+from streamlit_sortables import sort_items
+
 elif menu=="Cicli":
     st.title("Cicli articoli")
 
     art = st.text_input("Articolo")
 
-    # recupera ciclo attuale
-    ciclo_attuale = get_ciclo(art) if art else []
+    # elenco articoli esistenti
+    articoli = pd.read_sql("SELECT articolo FROM cicli", conn)["articolo"].tolist()
 
-    st.subheader("Ciclo attuale")
+    # ciclo attuale DB
+    ciclo_db = get_ciclo(art) if art in articoli else []
 
+    # stato temporaneo
     if "ciclo_temp" not in st.session_state:
-        st.session_state.ciclo_temp = ciclo_attuale.copy()
+        st.session_state.ciclo_temp = []
 
-    # reset quando cambia articolo
-    if art and ciclo_attuale != st.session_state.ciclo_temp:
-        st.session_state.ciclo_temp = ciclo_attuale.copy()
+    # reset se cambia articolo
+    if art and art not in articoli:
+        st.session_state.ciclo_temp = []
 
-    # mostra ciclo corrente
-    for i, fase in enumerate(st.session_state.ciclo_temp):
-        col1, col2 = st.columns([4,1])
-        col1.write(f"{i+1}. {fase}")
-        if col2.button(f"❌_{i}"):
-            st.session_state.ciclo_temp.pop(i)
-            st.rerun()
+    elif art and ciclo_db != st.session_state.ciclo_temp:
+        st.session_state.ciclo_temp = ciclo_db.copy()
+
+    st.subheader("Ciclo (drag & drop)")
+
+    if st.session_state.ciclo_temp:
+        nuovo_ordine = sort_items(st.session_state.ciclo_temp, direction="vertical")
+        st.session_state.ciclo_temp = nuovo_ordine
+    else:
+        st.info("Nessun ciclo definito")
 
     st.divider()
 
+    # aggiunta fase
     st.subheader("Aggiungi fase")
 
     nuova_fase = st.selectbox("Macchina", FASI)
 
-    if st.button("➕ Aggiungi"):
+    if st.button("➕ Aggiungi fase"):
         st.session_state.ciclo_temp.append(nuova_fase)
         st.rerun()
 
+    # rimozione ultima (rapida)
+    if st.button("❌ Rimuovi ultima"):
+        if st.session_state.ciclo_temp:
+            st.session_state.ciclo_temp.pop()
+            st.rerun()
+
     st.divider()
 
+    # copia ciclo
+    st.subheader("📋 Copia ciclo da altro articolo")
+
+    articolo_copia = st.selectbox("Seleziona articolo", [""] + articoli)
+
+    if st.button("📥 Copia ciclo"):
+        if articolo_copia:
+            ciclo_copy = get_ciclo(articolo_copia)
+            st.session_state.ciclo_temp = ciclo_copy.copy()
+            st.success(f"Ciclo copiato da {articolo_copia}")
+            st.rerun()
+
+    st.divider()
+
+    # salvataggio
     if st.button("💾 Salva ciclo"):
-        if art and st.session_state.ciclo_temp:
+        if art:
             c.execute(
                 "INSERT OR REPLACE INTO cicli VALUES (?,?)",
                 (art, "|".join(st.session_state.ciclo_temp))
