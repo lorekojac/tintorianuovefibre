@@ -11,8 +11,9 @@ st.set_page_config(layout="wide", page_title="Tintoria nuovefibre")
 # ---------------- CONFIG ----------------
 FASI = [
     "Bruciapelo","Sbozzima","Lavaggio",
-    "Candeggio Vaporizzo","Mercerizzo",
+    "Vaporizzo","Mercerizzo",
     "Sodatrice","Candeggio Stoccaggio","Ramosa"
+    "Leone","spazzola","smeriglio"
 ]
 
 UTENTI = {
