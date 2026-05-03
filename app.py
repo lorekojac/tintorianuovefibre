@@ -3,14 +3,15 @@ import pandas as pd
 import sqlite3
 from datetime import datetime, timedelta, time
 from streamlit.components.v1 import html
+import matplotlib.pyplot as plt
 
-st.set_page_config(layout="wide", page_title="Tintoria nuovefibre PRO")
+st.set_page_config(layout="wide", page_title="Tintoria nuovefibre")
 
 # ---------------- CONFIG ----------------
 FASI = [
     "Bruciapelo","Sbozzima","Lavaggio",
     "Candeggio Vaporizzo","Mercerizzo",
-    "Sodatrice","Candeggio Stoccaggio","Ramosa","Leone"
+    "Sodatrice","Candeggio Stoccaggio","Ramosa"
 ]
 
 UTENTI = {
@@ -46,18 +47,9 @@ setup INT
 """)
 
 c.execute("""
-CREATE TABLE IF NOT EXISTS turni(
-nome TEXT PRIMARY KEY,
-start TEXT,
-end TEXT
-)
-""")
-
-c.execute("""
-CREATE TABLE IF NOT EXISTS pause(
-nome TEXT PRIMARY KEY,
-start TEXT,
-end TEXT
+CREATE TABLE IF NOT EXISTS cicli(
+articolo TEXT PRIMARY KEY,
+fasi TEXT
 )
 """)
 
@@ -67,52 +59,18 @@ conn.commit()
 for f in FASI:
     c.execute("INSERT OR IGNORE INTO macchine VALUES (?,?,?)",(f,20,10))
 
-# default turni
-c.execute("INSERT OR IGNORE INTO turni VALUES ('T1','06:00','14:00')")
-c.execute("INSERT OR IGNORE INTO turni VALUES ('T2','14:00','22:00')")
-
-# pausa
-c.execute("INSERT OR IGNORE INTO pause VALUES ('Pranzo','12:00','13:00')")
-
 conn.commit()
 
-# ---------------- UTILS TEMPO ----------------
-def in_pausa(dt):
-    pause = pd.read_sql("SELECT * FROM pause", conn)
-    for _,p in pause.iterrows():
-        s = datetime.combine(dt.date(), datetime.strptime(p["start"],"%H:%M").time())
-        e = datetime.combine(dt.date(), datetime.strptime(p["end"],"%H:%M").time())
-        if s <= dt < e:
-            return True, e
-    return False, dt
-
-def prossimo_turno(dt):
-    turni = pd.read_sql("SELECT * FROM turni", conn)
-    for _,t in turni.iterrows():
-        s = datetime.combine(dt.date(), datetime.strptime(t["start"],"%H:%M").time())
-        e = datetime.combine(dt.date(), datetime.strptime(t["end"],"%H:%M").time())
-        if s <= dt < e:
-            return dt
-    # vai al giorno dopo primo turno
-    t0 = turni.iloc[0]
-    return datetime.combine(dt.date()+timedelta(days=1), datetime.strptime(t0["start"],"%H:%M").time())
-
+# ---------------- TEMPO ----------------
 def aggiungi_tempo(start, durata_min):
-    corrente = start
-    minuti = durata_min
+    return start + timedelta(minutes=durata_min)
 
-    while minuti > 0:
-        corrente = prossimo_turno(corrente)
-
-        pausa, fine_pausa = in_pausa(corrente)
-        if pausa:
-            corrente = fine_pausa
-            continue
-
-        corrente += timedelta(minutes=1)
-        minuti -= 1
-
-    return corrente
+# ---------------- CICLI ----------------
+def get_ciclo(art):
+    r = c.execute("SELECT fasi FROM cicli WHERE articolo=?", (art,)).fetchone()
+    if r and r[0]:
+        return r[0].split("|")
+    return FASI
 
 # ---------------- LOAD ----------------
 def load():
@@ -126,27 +84,27 @@ def load():
 
     for _,r in df.iterrows():
         start = pd.to_datetime(r["data"])
+        ciclo = get_ciclo(r["articolo"])
 
-        for i in range(r["fase"], len(FASI)):
-            fase = FASI[i]
+        for i in range(r["fase"], len(ciclo)):
+            fase = ciclo[i]
 
             m = mac[mac["nome"]==fase]
             vel = float(m["velocita"].values[0])
             setup = int(m["setup"].values[0])
 
             durata = (r["metri"]/vel) + setup
-
             end = aggiungi_tempo(start, durata)
 
             records.append({
                 "id":r["id"],
                 "lotto":r["lotto"],
+                "articolo":r["articolo"],
                 "cliente":r["cliente"],
                 "fase":fase,
                 "start":start,
                 "end":end,
-                "durata":round(durata,1),
-                "priorita":r["priorita"]
+                "durata":round(durata,1)
             })
 
             start = end
@@ -167,6 +125,7 @@ if not st.session_state.login:
         if u in UTENTI and UTENTI[u]["password"]==p:
             st.session_state.login=True
             st.session_state.user=u
+            st.session_state.ruolo=UTENTI[u]["ruolo"]
             st.rerun()
         else:
             st.error("Errore")
@@ -175,13 +134,78 @@ if not st.session_state.login:
 
 df = load()
 
-menu = st.sidebar.selectbox("Menu",[
-    "Produzione","Gantt","Inserimento","Setup"
-])
+# ---------------- MENU ----------------
+if st.session_state.ruolo=="operatore":
+    menu = "Produzione"
+else:
+    menu = st.sidebar.selectbox("Menu",[
+        "Produzione","Calendario","Cicli","Inserimento","Setup","Dashboard"
+    ])
+
+# ---------------- PRODUZIONE ----------------
+if menu=="Produzione":
+    st.title("Produzione")
+
+    for i,r in df.iterrows():
+        col1,col2,col3,col4=st.columns(4)
+
+        col1.write(f"{r['lotto']} - {r['cliente']}")
+        col2.write(r["fase"])
+        col3.write(f"{r['start']} → {r['end']}")
+        col4.write(f"{r['durata']} min")
+
+        if st.button(f"Fatto {i}"):
+            c.execute("UPDATE lotti SET fase=fase+1 WHERE id=?", (r["id"],))
+            conn.commit()
+            st.rerun()
+
+# ---------------- CALENDARIO ----------------
+elif menu=="Calendario":
+    st.title("Calendario produzione")
+
+    if not df.empty:
+        items=[]
+        for _,r in df.iterrows():
+            items.append({
+                "content":f"{r['lotto']} - {r['fase']}",
+                "start":str(r["start"]),
+                "end":str(r["end"])
+            })
+
+        html(f"""
+        <div id="timeline"></div>
+        <script src="https://unpkg.com/vis-timeline/standalone/umd/vis-timeline-graph2d.min.js"></script>
+        <link href="https://unpkg.com/vis-timeline/styles/vis-timeline-graph2d.min.css" rel="stylesheet" />
+        <script>
+        var container = document.getElementById('timeline');
+        var items = new vis.DataSet({items});
+        var timeline = new vis.Timeline(container, items, {{stack:true}});
+        </script>
+        """, height=500)
+
+# ---------------- CICLI ----------------
+elif menu=="Cicli":
+    st.title("Cicli articoli")
+
+    art = st.text_input("Articolo")
+
+    ciclo_attuale = get_ciclo(art)
+
+    selezione = st.multiselect(
+        "Macchine",
+        FASI,
+        default=ciclo_attuale
+    )
+
+    if st.button("Salva ciclo"):
+        c.execute("INSERT OR REPLACE INTO cicli VALUES (?,?)",
+                  (art, "|".join(selezione)))
+        conn.commit()
+        st.success("Salvato")
 
 # ---------------- INSERIMENTO ----------------
-if menu=="Inserimento":
-    st.title("Nuovo Lotto")
+elif menu=="Inserimento":
+    st.title("Nuovo lotto")
 
     lotto=st.text_input("Lotto")
     art=st.text_input("Articolo")
@@ -196,50 +220,9 @@ if menu=="Inserimento":
         st.success("Inserito")
         st.rerun()
 
-# ---------------- PRODUZIONE ----------------
-elif menu=="Produzione":
-    st.title("Produzione")
-
-    for i,r in df.iterrows():
-        col1,col2,col3,col4=st.columns(4)
-
-        col1.write(f"**{r['lotto']}**")
-        col2.write(r["fase"])
-        col3.write(f"{r['start']} → {r['end']}")
-        col4.write(f"{r['durata']} min")
-
-        if st.button(f"Fatto {i}"):
-            c.execute("UPDATE lotti SET fase=fase+1 WHERE id=?", (r["id"],))
-            conn.commit()
-            st.rerun()
-
-# ---------------- GANTT ----------------
-elif menu=="Gantt":
-    st.title("Gantt")
-
-    items=[]
-    for _,r in df.iterrows():
-        items.append({
-            "content":r["lotto"],
-            "start":str(r["start"]),
-            "end":str(r["end"])
-        })
-
-    html(f"""
-    <div id="timeline"></div>
-    <script src="https://unpkg.com/vis-timeline/standalone/umd/vis-timeline-graph2d.min.js"></script>
-    <link href="https://unpkg.com/vis-timeline/styles/vis-timeline-graph2d.min.css" rel="stylesheet" />
-
-    <script>
-    var container = document.getElementById('timeline');
-    var items = new vis.DataSet({items});
-    var timeline = new vis.Timeline(container, items, {{stack:true}});
-    </script>
-    """, height=500)
-
 # ---------------- SETUP ----------------
 elif menu=="Setup":
-    st.title("Setup Macchine")
+    st.title("Setup macchine")
 
     mac = pd.read_sql("SELECT * FROM macchine", conn)
 
@@ -254,3 +237,23 @@ elif menu=="Setup":
                       (vel,setup,r["nome"]))
             conn.commit()
             st.success("Salvato")
+
+# ---------------- DASHBOARD ----------------
+elif menu=="Dashboard":
+    st.title("Carico macchine")
+
+    if not df.empty:
+        df["giorno"] = df["start"].dt.date
+
+        grouped = df.groupby(["giorno","fase"]).agg({"durata":"sum"}).reset_index()
+
+        for macchina in grouped["fase"].unique():
+            sub = grouped[grouped["fase"]==macchina]
+
+            st.subheader(macchina)
+
+            fig, ax = plt.subplots()
+            ax.bar(sub["giorno"], sub["durata"])
+            ax.set_ylabel("minuti lavorazione")
+
+            st.pyplot(fig)
