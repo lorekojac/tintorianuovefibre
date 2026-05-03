@@ -12,8 +12,8 @@ st.set_page_config(layout="wide", page_title="Tintoria nuovefibre")
 FASI = [
     "Bruciapelo","Sbozzima","Lavaggio",
     "Candeggio Vaporizzo","Mercerizzo",
-    "Sodatrice","Candeggio Stoccaggio",
-    "Ramosa","Leone","spazzola","smeriglio"
+    "Sodatrice","Candeggio Stoccaggio","Ramosa",
+    "Leone","Smeriglio","Spazzola"
 ]
 
 UTENTI = {
@@ -27,8 +27,7 @@ DB="tintoria.db"
 conn = sqlite3.connect(DB, check_same_thread=False)
 c = conn.cursor()
 
-c.execute("""
-CREATE TABLE IF NOT EXISTS lotti(
+c.execute("""CREATE TABLE IF NOT EXISTS lotti(
 id INTEGER PRIMARY KEY AUTOINCREMENT,
 lotto TEXT UNIQUE,
 articolo TEXT,
@@ -36,30 +35,23 @@ cliente TEXT,
 metri REAL,
 data TEXT,
 fase INT
-)
-""")
+)""")
 
-c.execute("""
-CREATE TABLE IF NOT EXISTS macchine(
+c.execute("""CREATE TABLE IF NOT EXISTS macchine(
 nome TEXT PRIMARY KEY,
 velocita REAL,
 setup INT
-)
-""")
+)""")
 
-c.execute("""
-CREATE TABLE IF NOT EXISTS cicli(
+c.execute("""CREATE TABLE IF NOT EXISTS cicli(
 articolo TEXT PRIMARY KEY,
 fasi TEXT
-)
-""")
+)""")
 
-c.execute("""
-CREATE TABLE IF NOT EXISTS orari(
+c.execute("""CREATE TABLE IF NOT EXISTS orari(
 id INTEGER PRIMARY KEY,
 inizio TEXT
-)
-""")
+)""")
 
 conn.commit()
 
@@ -147,21 +139,11 @@ df = load()
 if st.session_state.ruolo=="operatore":
     menu="Produzione"
 else:
-    menu=st.sidebar.selectbox("Menu",[
-        "Produzione","Gantt","Excel","Inserimento","Cicli","Setup"
-    ])
-
-# ---------------- PRODUZIONE ----------------
-# ---------------- MENU ----------------
-if st.session_state.ruolo=="operatore":
-    menu = "Produzione"
-else:
     menu = st.sidebar.selectbox("Menu",[
         "Produzione","Gantt","Excel","Inserimento","Cicli","Setup"
     ])
 
-# ---------------- CONTENUTO ----------------
-
+# ---------------- PRODUZIONE ----------------
 if menu == "Produzione":
     st.title("Produzione")
 
@@ -182,6 +164,7 @@ if menu == "Produzione":
                 conn.commit()
                 st.rerun()
 
+# ---------------- GANTT ----------------
 elif menu == "Gantt":
     st.title("Gantt")
 
@@ -208,6 +191,16 @@ elif menu == "Gantt":
     </script>
     """, height=500)
 
+    if st.button("📥 Applica modifiche"):
+        nuovo = df.sort_values(by="start")
+        for _,r in nuovo.iterrows():
+            c.execute("UPDATE lotti SET data=? WHERE id=?",
+                      (str(r["start"].date()), r["id"]))
+        conn.commit()
+        st.success("Aggiornato")
+        st.rerun()
+
+# ---------------- EXCEL ----------------
 elif menu == "Excel":
     st.title("Export Excel")
 
@@ -217,89 +210,14 @@ elif menu == "Excel":
 
         st.dataframe(dfm)
 
-        import io
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             dfm.to_excel(writer, index=False)
 
         st.download_button("Scarica Excel", output.getvalue(), file_name=f"{macchina}.xlsx")
 
-elif menu == "Inserimento":
-    st.title("Nuovo lotto")
-    # 👉 qui rimane il tuo codice inserimento
-
-elif menu == "Cicli":
-    # 👉 QUI INCOLLA IL BLOCCO CICLI PRO CHE TI HO DATO
-
-elif menu == "Setup":
-    st.title("Setup")
-
-# ---------------- GANTT ----------------
-elif menu=="Gantt":
-    st.title("Gantt interattivo")
-
-    if df.empty:
-        st.info("Nessun dato")
-    else:
-        items=[]
-        for _,r in df.iterrows():
-            items.append({
-                "id":r["id"],
-                "content":f"{r['lotto']} - {r['fase']}",
-                "start":str(r["start"]),
-                "end":str(r["end"])
-            })
-
-        html(f"""
-        <div id="timeline"></div>
-        <script src="https://unpkg.com/vis-timeline/standalone/umd/vis-timeline-graph2d.min.js"></script>
-        <link href="https://unpkg.com/vis-timeline/styles/vis-timeline-graph2d.min.css" rel="stylesheet" />
-        <script>
-        var container = document.getElementById('timeline');
-        var items = new vis.DataSet({items});
-        var timeline = new vis.Timeline(container, items, {{
-            editable:true,
-            stack:true
-        }});
-        </script>
-        """, height=500)
-
-        st.warning("Dopo aver spostato i blocchi premi sotto")
-
-        if st.button("📥 Applica modifiche"):
-            nuovo = df.sort_values(by="start")
-            for _,r in nuovo.iterrows():
-                c.execute("UPDATE lotti SET data=? WHERE id=?",
-                          (str(r["start"].date()), r["id"]))
-            conn.commit()
-            st.success("Produzione aggiornata")
-            st.rerun()
-
-# ---------------- EXCEL ----------------
-elif menu=="Excel":
-    st.title("Export Excel per macchina")
-
-    if df.empty:
-        st.info("Nessun dato")
-    else:
-        macchina = st.selectbox("Macchina", sorted(df["fase"].unique()))
-        dfm = df[df["fase"]==macchina].sort_values(by="start")
-
-        st.dataframe(dfm)
-
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            dfm.to_excel(writer, index=False, sheet_name=macchina)
-
-        st.download_button(
-            label="📥 Scarica Excel",
-            data=output.getvalue(),
-            file_name=f"{macchina}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-
 # ---------------- INSERIMENTO ----------------
-elif menu=="Inserimento":
+elif menu == "Inserimento":
     st.title("Nuovo lotto")
 
     lotto = st.text_input("Lotto")
@@ -321,33 +239,63 @@ elif menu=="Inserimento":
             for e in errori: st.error(e)
         else:
             c.execute("""
-                INSERT INTO lotti (lotto, articolo, cliente, metri, data, fase)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (lotto, articolo, cliente, metri, str(data), 0))
+            INSERT INTO lotti (lotto, articolo, cliente, metri, data, fase)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,(lotto,articolo,cliente,metri,str(data),0))
             conn.commit()
             st.success("Inserito")
             st.rerun()
 
-# ---------------- CICLI ----------------
-elif menu=="Cicli":
-elif menu=="Cicli":
+# ---------------- CICLI PRO ----------------
+elif menu == "Cicli":
     st.title("Editor cicli PRO")
 
     articoli = pd.read_sql("SELECT articolo FROM cicli", conn)["articolo"].tolist()
     art = st.text_input("Articolo")
 
-    # stato persistente
     if "ciclo_temp" not in st.session_state:
-        st.session_state.ciclo_temp = []
-        st.session_state.art_corrente = None
+        st.session_state.ciclo_temp=[]
+        st.session_state.art=None
 
-    if art != st.session_state.art_corrente:
-        st.session_state.art_corrente = art
+    if art != st.session_state.art:
+        st.session_state.art=art
+        st.session_state.ciclo_temp = get_ciclo(art) if art in articoli else []
 
-        if art in articoli:
-            st.session_state.ciclo_temp = get_ciclo(art)
-        else:
-            st.session_state.ciclo_temp = []
+    st.dataframe(pd.DataFrame({
+        "Step":range(1,len(st.session_state.ciclo_temp)+1),
+        "Fase":st.session_state.ciclo_temp
+    }))
+
+    if st.session_state.ciclo_temp:
+        st.session_state.ciclo_temp = sort_items(st.session_state.ciclo_temp)
+
+    nuova = st.selectbox("Macchina", FASI)
+    if st.button("➕"):
+        st.session_state.ciclo_temp.append(nuova)
+        st.rerun()
+
+    copia = st.selectbox("Copia da",[""]+articoli)
+    if st.button("📥 Copia"):
+        if copia:
+            st.session_state.ciclo_temp=get_ciclo(copia)
+            st.rerun()
+
+    if st.button("💾 Salva"):
+        c.execute("INSERT OR REPLACE INTO cicli VALUES (?,?)",
+                  (art,"|".join(st.session_state.ciclo_temp)))
+        conn.commit()
+        st.success("Salvato")
+
+# ---------------- SETUP ----------------
+elif menu == "Setup":
+    st.title("Orario lavoro")
+
+    start = st.text_input("Inizio giornata","08:00")
+
+    if st.button("Salva"):
+        c.execute("UPDATE orari SET inizio=? WHERE id=1",(start,))
+        conn.commit()
+        st.success("Salvato")_state.ciclo_temp = []
 
     # ---------------- TABELLA ----------------
     st.subheader("Ciclo lavorazione")
