@@ -12,7 +12,7 @@ st.set_page_config(layout="wide", page_title="Tintoria nuovefibre")
 FASI = [
     "Bruciapelo","Sbozzima","Lavaggio",
     "Vaporizzo","Mercerizzo",
-    "Sodatrice","Candeggio Stoccaggio","Ramosa"
+    "Sodatrice","Candeggio Stoccaggio","Ramosa",
     "Leone","spazzola","smeriglio"
 ]
 
