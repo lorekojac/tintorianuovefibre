@@ -3,7 +3,6 @@ import pandas as pd
 import sqlite3
 from datetime import datetime, timedelta
 from streamlit.components.v1 import html
-import matplotlib.pyplot as plt
 from streamlit_sortables import sort_items
 
 st.set_page_config(layout="wide", page_title="Tintoria nuovefibre")
@@ -11,9 +10,8 @@ st.set_page_config(layout="wide", page_title="Tintoria nuovefibre")
 # ---------------- CONFIG ----------------
 FASI = [
     "Bruciapelo","Sbozzima","Lavaggio",
-    "Vaporizzo","Mercerizzo",
-    "Sodatrice","Candeggio Stoccaggio","Ramosa",
-    "Leone","spazzola","smeriglio"
+    "Candeggio Vaporizzo","Mercerizzo",
+    "Sodatrice","Candeggio Stoccaggio","Ramosa"
 ]
 
 UTENTI = {
@@ -35,8 +33,7 @@ articolo TEXT,
 cliente TEXT,
 metri REAL,
 data TEXT,
-fase INT,
-priorita TEXT
+fase INT
 )
 """)
 
@@ -55,23 +52,32 @@ fasi TEXT
 )
 """)
 
+c.execute("""
+CREATE TABLE IF NOT EXISTS orari(
+id INTEGER PRIMARY KEY,
+inizio TEXT
+)
+""")
+
 conn.commit()
 
-# default macchine
+# default
 for f in FASI:
     c.execute("INSERT OR IGNORE INTO macchine VALUES (?,?,?)",(f,20,10))
+c.execute("INSERT OR IGNORE INTO orari VALUES (1,'08:00')")
 conn.commit()
 
 # ---------------- FUNZIONI ----------------
+def get_orario():
+    df = pd.read_sql("SELECT * FROM orari", conn)
+    return df.iloc[0]["inizio"]
+
 def get_ciclo(art):
     r = c.execute("SELECT fasi FROM cicli WHERE articolo=?", (art,)).fetchone()
-    if r and r[0]:
-        return r[0].split("|")
-    return []
+    return r[0].split("|") if r and r[0] else []
 
-def save_ciclo(art, ciclo_list):
-    c.execute("INSERT OR REPLACE INTO cicli VALUES (?,?)",
-              (art, "|".join(ciclo_list)))
+def save_ciclo(art, ciclo):
+    c.execute("INSERT OR REPLACE INTO cicli VALUES (?,?)",(art,"|".join(ciclo)))
     conn.commit()
 
 def load():
@@ -80,10 +86,11 @@ def load():
         return df
 
     mac = pd.read_sql("SELECT * FROM macchine", conn)
-    records=[]
+    start_day = get_orario()
 
+    records=[]
     for _,r in df.iterrows():
-        start = pd.to_datetime(r["data"])
+        base_date = pd.to_datetime(r["data"])
         ciclo = get_ciclo(r["articolo"])
         if not ciclo:
             continue
@@ -91,24 +98,28 @@ def load():
         for i in range(r["fase"], len(ciclo)):
             fase = ciclo[i]
 
-            m = mac[mac["nome"]==fase]
-            vel = float(m["velocita"].values[0])
-            setup = int(m["setup"].values[0])
+            vel = mac[mac["nome"]==fase]["velocita"].values[0]
+            setup = mac[mac["nome"]==fase]["setup"].values[0]
 
             durata = (r["metri"]/vel) + setup
+
+            giorno = base_date + timedelta(days=i)
+
+            start = datetime.combine(
+                giorno.date(),
+                datetime.strptime(start_day,"%H:%M").time()
+            )
             end = start + timedelta(minutes=durata)
 
             records.append({
                 "id":r["id"],
                 "lotto":r["lotto"],
                 "articolo":r["articolo"],
-                "cliente":r["cliente"],
                 "fase":fase,
                 "start":start,
                 "end":end,
                 "durata":round(durata,1)
             })
-            start = end
 
     return pd.DataFrame(records)
 
@@ -124,21 +135,20 @@ if not st.session_state.login:
     if st.button("Login"):
         if u in UTENTI and UTENTI[u]["password"]==p:
             st.session_state.login=True
-            st.session_state.user=u
             st.session_state.ruolo=UTENTI[u]["ruolo"]
             st.rerun()
         else:
-            st.error("Errore")
+            st.error("Credenziali errate")
     st.stop()
 
 df = load()
 
 # ---------------- MENU ----------------
 if st.session_state.ruolo=="operatore":
-    menu = "Produzione"
+    menu="Produzione"
 else:
-    menu = st.sidebar.selectbox("Menu",[
-        "Produzione","Calendario","Cicli","Inserimento","Setup","Dashboard"
+    menu=st.sidebar.selectbox("Menu",[
+        "Produzione","Gantt","Cicli","Inserimento","Setup"
     ])
 
 # ---------------- PRODUZIONE ----------------
@@ -149,138 +159,116 @@ if menu=="Produzione":
         st.info("Nessun lavoro")
     else:
         macchina = st.selectbox("Macchina", sorted(df["fase"].unique()))
-        df_mac = df[df["fase"]==macchina].sort_values(by="start")
+        dfm = df[df["fase"]==macchina].sort_values(by="start")
 
-        for i,r in df_mac.iterrows():
-            col1,col2,col3,col4=st.columns(4)
-            col1.write(f"{r['lotto']} - {r['cliente']}")
-            col2.write(r["fase"])
-            col3.write(f"{r['start'].strftime('%d/%m %H:%M')} → {r['end'].strftime('%H:%M')}")
-            col4.write(f"{r['durata']} min")
+        for i,r in dfm.iterrows():
+            col1,col2,col3=st.columns(3)
+            col1.write(r["lotto"])
+            col2.write(r["start"].strftime("%d/%m %H:%M"))
+            col3.write(f"{r['durata']} min")
 
             if st.button(f"Fatto_{r['id']}_{i}"):
                 c.execute("UPDATE lotti SET fase=fase+1 WHERE id=?", (r["id"],))
                 conn.commit()
                 st.rerun()
 
-# ---------------- CALENDARIO ----------------
-elif menu=="Calendario":
-    st.title("Calendario produzione")
+# ---------------- GANTT ----------------
+elif menu=="Gantt":
+    st.title("Gantt interattivo")
 
-    items=[]
-    for _,r in df.iterrows():
-        items.append({
-            "content":f"{r['lotto']} - {r['fase']}",
-            "start":str(r["start"]),
-            "end":str(r["end"])
-        })
+    if df.empty:
+        st.info("Nessun dato")
+    else:
+        items=[]
+        for _,r in df.iterrows():
+            items.append({
+                "id":r["id"],
+                "content":f"{r['lotto']} - {r['fase']}",
+                "start":str(r["start"]),
+                "end":str(r["end"])
+            })
 
-    html(f"""
-    <div id="timeline"></div>
-    <script src="https://unpkg.com/vis-timeline/standalone/umd/vis-timeline-graph2d.min.js"></script>
-    <link href="https://unpkg.com/vis-timeline/styles/vis-timeline-graph2d.min.css" rel="stylesheet" />
-    <script>
-    var container = document.getElementById('timeline');
-    var items = new vis.DataSet({items});
-    var timeline = new vis.Timeline(container, items, {{stack:true}});
-    </script>
-    """, height=500)
+        st.markdown("👉 Trascina i blocchi per cambiare ordine temporale")
 
-# ---------------- CICLI AVANZATO ----------------
+        html(f"""
+        <div id="timeline"></div>
+        <script src="https://unpkg.com/vis-timeline/standalone/umd/vis-timeline-graph2d.min.js"></script>
+        <link href="https://unpkg.com/vis-timeline/styles/vis-timeline-graph2d.min.css" rel="stylesheet" />
+        <script>
+        var container = document.getElementById('timeline');
+        var items = new vis.DataSet({items});
+        var timeline = new vis.Timeline(container, items, {{
+            editable:true,
+            stack:true
+        }});
+        </script>
+        """, height=500)
+
+        st.warning("Premi sotto per applicare la nuova pianificazione")
+
+        if st.button("📥 Applica modifiche"):
+            nuovo = df.sort_values(by="start")
+
+            for _,r in nuovo.iterrows():
+                nuova_data = r["start"].date()
+                c.execute("UPDATE lotti SET data=? WHERE id=?",
+                          (str(nuova_data), r["id"]))
+
+            conn.commit()
+            st.success("Pianificazione aggiornata")
+            st.rerun()
+
+# ---------------- CICLI ----------------
 elif menu=="Cicli":
     st.title("Editor cicli avanzato")
 
     articoli = pd.read_sql("SELECT articolo FROM cicli", conn)["articolo"].tolist()
     art = st.text_input("Articolo")
 
-    # stato
     if "ciclo_temp" not in st.session_state:
         st.session_state.ciclo_temp=[]
-        st.session_state.art_corr=None
+        st.session_state.art=None
 
-    # cambio articolo
-    if art != st.session_state.art_corr:
-        st.session_state.art_corr = art
-        if art in articoli:
-            st.session_state.ciclo_temp = get_ciclo(art)
-        else:
-            st.session_state.ciclo_temp = []
+    if art != st.session_state.art:
+        st.session_state.art = art
+        st.session_state.ciclo_temp = get_ciclo(art) if art in articoli else []
 
-    # -------- TABELLA --------
     st.subheader("Ciclo")
-    if st.session_state.ciclo_temp:
-        df_ciclo = pd.DataFrame({
-            "Ordine": range(1,len(st.session_state.ciclo_temp)+1),
-            "Fase": st.session_state.ciclo_temp
-        })
-        st.dataframe(df_ciclo, use_container_width=True)
-    else:
-        st.info("Ciclo vuoto")
+    st.dataframe(pd.DataFrame({
+        "Ordine":range(1,len(st.session_state.ciclo_temp)+1),
+        "Fase":st.session_state.ciclo_temp
+    }))
 
-    st.divider()
-
-    # -------- DRAG --------
-    st.subheader("Riordina (drag)")
+    st.subheader("Riordina")
     if st.session_state.ciclo_temp:
         st.session_state.ciclo_temp = sort_items(st.session_state.ciclo_temp)
 
-    st.divider()
-
-    # -------- AGGIUNTA POSIZIONE --------
     st.subheader("Inserisci fase")
-
-    colA, colB = st.columns(2)
-    nuova = colA.selectbox("Macchina", FASI)
-    pos = colB.number_input("Posizione (1 = inizio)", min_value=1,
-                           max_value=len(st.session_state.ciclo_temp)+1,
-                           value=len(st.session_state.ciclo_temp)+1)
+    nuova=st.selectbox("Fase", FASI)
+    pos=st.number_input("Posizione",1,len(st.session_state.ciclo_temp)+1,
+                        len(st.session_state.ciclo_temp)+1)
 
     if st.button("➕ Inserisci"):
         st.session_state.ciclo_temp.insert(int(pos)-1, nuova)
         st.rerun()
 
-    # -------- MODIFICA --------
-    st.subheader("Modifica fase")
-
-    if st.session_state.ciclo_temp:
-        idx = st.number_input("Indice fase", min_value=1,
-                              max_value=len(st.session_state.ciclo_temp), value=1)
-        nuova_val = st.selectbox("Nuova fase", FASI, key="editfase")
-
-        if st.button("✏️ Modifica"):
-            st.session_state.ciclo_temp[int(idx)-1] = nuova_val
-            st.rerun()
-
-    # -------- RIMOZIONE --------
     st.subheader("Rimuovi fase")
     if st.session_state.ciclo_temp:
-        idx_del = st.number_input("Indice da eliminare",
-                                 min_value=1,
-                                 max_value=len(st.session_state.ciclo_temp), value=1,
-                                 key="del")
-
-        if st.button("❌ Elimina"):
-            st.session_state.ciclo_temp.pop(int(idx_del)-1)
+        idx=st.number_input("Indice",1,len(st.session_state.ciclo_temp),1)
+        if st.button("❌ Rimuovi"):
+            st.session_state.ciclo_temp.pop(int(idx)-1)
             st.rerun()
 
-    st.divider()
-
-    # -------- COPIA --------
     st.subheader("Copia ciclo")
-    copia = st.selectbox("Da articolo", [""]+articoli)
-
+    copia=st.selectbox("Da articolo",[""]+articoli)
     if st.button("📥 Copia"):
         if copia:
-            st.session_state.ciclo_temp = get_ciclo(copia)
+            st.session_state.ciclo_temp=get_ciclo(copia)
             st.rerun()
 
-    st.divider()
-
-    # -------- SALVA --------
-    if st.button("💾 Salva ciclo"):
-        if art:
-            save_ciclo(art, st.session_state.ciclo_temp)
-            st.success("Salvato")
+    if st.button("💾 Salva"):
+        save_ciclo(art, st.session_state.ciclo_temp)
+        st.success("Salvato")
 
 # ---------------- INSERIMENTO ----------------
 elif menu=="Inserimento":
@@ -289,46 +277,22 @@ elif menu=="Inserimento":
     lotto=st.text_input("Lotto")
     art=st.text_input("Articolo")
     cliente=st.text_input("Cliente")
-    metri=st.number_input("Metri", value=1000)
-    data=st.date_input("Data", datetime.today())
+    metri=st.number_input("Metri",value=1000)
+    data=st.date_input("Data")
 
     if st.button("Salva"):
-        c.execute("INSERT INTO lotti VALUES(NULL,?,?,?,?,?,?,?)",
-                  (lotto,art,cliente,metri,str(data),0,"Normale"))
+        c.execute("INSERT INTO lotti VALUES(NULL,?,?,?,?,?,0)",
+                  (lotto,art,cliente,metri,str(data)))
         conn.commit()
         st.success("Inserito")
-        st.rerun()
 
 # ---------------- SETUP ----------------
 elif menu=="Setup":
-    st.title("Setup macchine")
+    st.title("Orario lavoro")
 
-    mac = pd.read_sql("SELECT * FROM macchine", conn)
+    start=st.text_input("Inizio giornata","08:00")
 
-    for i,r in mac.iterrows():
-        col1,col2,col3=st.columns(3)
-        col1.write(r["nome"])
-        vel=col2.number_input("m/min", value=float(r["velocita"]), key=f"v{i}")
-        setup=col3.number_input("setup min", value=int(r["setup"]), key=f"s{i}")
-
-        if st.button(f"Salva {r['nome']}"):
-            c.execute("UPDATE macchine SET velocita=?,setup=? WHERE nome=?",
-                      (vel,setup,r["nome"]))
-            conn.commit()
-            st.success("Salvato")
-
-# ---------------- DASHBOARD ----------------
-elif menu=="Dashboard":
-    st.title("Carico macchine")
-
-    if not df.empty:
-        df["giorno"] = df["start"].dt.date
-        grouped = df.groupby(["giorno","fase"]).agg({"durata":"sum"}).reset_index()
-
-        for macchina in grouped["fase"].unique():
-            sub = grouped[grouped["fase"]==macchina]
-            st.subheader(macchina)
-            fig, ax = plt.subplots()
-            ax.bar(sub["giorno"], sub["durata"])
-            ax.set_ylabel("minuti")
-            st.pyplot(fig)
+    if st.button("Salva"):
+        c.execute("UPDATE orari SET inizio=? WHERE id=1",(start,))
+        conn.commit()
+        st.success("Salvato")
