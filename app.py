@@ -1,9 +1,10 @@
 import streamlit as st
 import pandas as pd
 import sqlite3
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta
 from streamlit.components.v1 import html
 import matplotlib.pyplot as plt
+from streamlit_sortables import sort_items
 
 st.set_page_config(layout="wide", page_title="Tintoria nuovefibre")
 
@@ -12,12 +13,11 @@ FASI = [
     "Bruciapelo","Sbozzima","Lavaggio",
     "Candeggio Vaporizzo","Mercerizzo",
     "Sodatrice","Candeggio Stoccaggio","Ramosa"
-    "Smeriglio","Artex","spazzola"
 ]
 
 UTENTI = {
-    "Op1": {"password":"op1","ruolo":"operatore"},
-    "Admin1": {"password":"admin1","ruolo":"admin"}
+    "op1": {"password":"op1","ruolo":"operatore"},
+    "admin1": {"password":"admin1","ruolo":"admin"}
 }
 
 DB="tintoria.db"
@@ -62,30 +62,27 @@ for f in FASI:
 
 conn.commit()
 
-# ---------------- TEMPO ----------------
-def aggiungi_tempo(start, durata_min):
-    return start + timedelta(minutes=durata_min)
-
-# ---------------- CICLI ----------------
+# ---------------- FUNZIONI ----------------
 def get_ciclo(art):
     r = c.execute("SELECT fasi FROM cicli WHERE articolo=?", (art,)).fetchone()
     if r and r[0]:
         return r[0].split("|")
-    return FASI
+    return []
 
-# ---------------- LOAD ----------------
 def load():
     df = pd.read_sql("SELECT * FROM lotti", conn)
     if df.empty:
         return df
 
     mac = pd.read_sql("SELECT * FROM macchine", conn)
-
     records=[]
 
     for _,r in df.iterrows():
         start = pd.to_datetime(r["data"])
         ciclo = get_ciclo(r["articolo"])
+
+        if not ciclo:
+            continue
 
         for i in range(r["fase"], len(ciclo)):
             fase = ciclo[i]
@@ -95,7 +92,7 @@ def load():
             setup = int(m["setup"].values[0])
 
             durata = (r["metri"]/vel) + setup
-            end = aggiungi_tempo(start, durata)
+            end = start + timedelta(minutes=durata)
 
             records.append({
                 "id":r["id"],
@@ -150,19 +147,14 @@ if menu=="Produzione":
     if df.empty:
         st.info("Nessun lavoro")
     else:
-        # selezione macchina
-        macchina = st.selectbox("Seleziona macchina", sorted(df["fase"].unique()))
+        macchina = st.selectbox("Macchina", sorted(df["fase"].unique()))
+        df_mac = df[df["fase"]==macchina].sort_values(by="start")
 
-        # filtro per macchina
-        df_macchina = df[df["fase"] == macchina].sort_values(by="start")
+        for i,r in df_mac.iterrows():
+            col1,col2,col3,col4=st.columns(4)
 
-        st.subheader(f"Lavori per: {macchina}")
-
-        for i, r in df_macchina.iterrows():
-            col1, col2, col3, col4 = st.columns([2,2,2,1])
-
-            col1.write(f"**{r['lotto']}**")
-            col2.write(r["cliente"])
+            col1.write(f"{r['lotto']} - {r['cliente']}")
+            col2.write(r["fase"])
             col3.write(f"{r['start'].strftime('%d/%m %H:%M')} → {r['end'].strftime('%H:%M')}")
             col4.write(f"{r['durata']} min")
 
@@ -175,101 +167,67 @@ if menu=="Produzione":
 elif menu=="Calendario":
     st.title("Calendario produzione")
 
-    if not df.empty:
-        items=[]
-        for _,r in df.iterrows():
-            items.append({
-                "content":f"{r['lotto']} - {r['fase']}",
-                "start":str(r["start"]),
-                "end":str(r["end"])
-            })
+    items=[]
+    for _,r in df.iterrows():
+        items.append({
+            "content":f"{r['lotto']} - {r['fase']}",
+            "start":str(r["start"]),
+            "end":str(r["end"])
+        })
 
-        html(f"""
-        <div id="timeline"></div>
-        <script src="https://unpkg.com/vis-timeline/standalone/umd/vis-timeline-graph2d.min.js"></script>
-        <link href="https://unpkg.com/vis-timeline/styles/vis-timeline-graph2d.min.css" rel="stylesheet" />
-        <script>
-        var container = document.getElementById('timeline');
-        var items = new vis.DataSet({items});
-        var timeline = new vis.Timeline(container, items, {{stack:true}});
-        </script>
-        """, height=500)
+    html(f"""
+    <div id="timeline"></div>
+    <script src="https://unpkg.com/vis-timeline/standalone/umd/vis-timeline-graph2d.min.js"></script>
+    <link href="https://unpkg.com/vis-timeline/styles/vis-timeline-graph2d.min.css" rel="stylesheet" />
+    <script>
+    var container = document.getElementById('timeline');
+    var items = new vis.DataSet({items});
+    var timeline = new vis.Timeline(container, items, {{stack:true}});
+    </script>
+    """, height=500)
 
 # ---------------- CICLI ----------------
-from streamlit_sortables import sort_items
-
 elif menu=="Cicli":
     st.title("Cicli articoli")
 
+    articoli = pd.read_sql("SELECT articolo FROM cicli", conn)["articolo"].tolist()
     art = st.text_input("Articolo")
 
-    # elenco articoli esistenti
-    articoli = pd.read_sql("SELECT articolo FROM cicli", conn)["articolo"].tolist()
-
-    # ciclo attuale DB
-    ciclo_db = get_ciclo(art) if art in articoli else []
-
-    # stato temporaneo
     if "ciclo_temp" not in st.session_state:
         st.session_state.ciclo_temp = []
 
-    # reset se cambia articolo
-    if art and art not in articoli:
+    if art not in articoli:
         st.session_state.ciclo_temp = []
-
-    elif art and ciclo_db != st.session_state.ciclo_temp:
-        st.session_state.ciclo_temp = ciclo_db.copy()
+    else:
+        st.session_state.ciclo_temp = get_ciclo(art)
 
     st.subheader("Ciclo (drag & drop)")
-
     if st.session_state.ciclo_temp:
-        nuovo_ordine = sort_items(st.session_state.ciclo_temp, direction="vertical")
-        st.session_state.ciclo_temp = nuovo_ordine
-    else:
-        st.info("Nessun ciclo definito")
+        st.session_state.ciclo_temp = sort_items(st.session_state.ciclo_temp)
 
-    st.divider()
-
-    # aggiunta fase
-    st.subheader("Aggiungi fase")
-
-    nuova_fase = st.selectbox("Macchina", FASI)
-
-    if st.button("➕ Aggiungi fase"):
-        st.session_state.ciclo_temp.append(nuova_fase)
+    nuova = st.selectbox("Aggiungi macchina", FASI)
+    if st.button("➕"):
+        st.session_state.ciclo_temp.append(nuova)
         st.rerun()
 
-    # rimozione ultima (rapida)
-    if st.button("❌ Rimuovi ultima"):
+    if st.button("❌ rimuovi ultima"):
         if st.session_state.ciclo_temp:
             st.session_state.ciclo_temp.pop()
             st.rerun()
 
-    st.divider()
-
-    # copia ciclo
-    st.subheader("📋 Copia ciclo da altro articolo")
-
-    articolo_copia = st.selectbox("Seleziona articolo", [""] + articoli)
-
-    if st.button("📥 Copia ciclo"):
-        if articolo_copia:
-            ciclo_copy = get_ciclo(articolo_copia)
-            st.session_state.ciclo_temp = ciclo_copy.copy()
-            st.success(f"Ciclo copiato da {articolo_copia}")
+    st.subheader("Copia ciclo")
+    copia = st.selectbox("Da articolo", [""]+articoli)
+    if st.button("Copia"):
+        if copia:
+            st.session_state.ciclo_temp = get_ciclo(copia)
             st.rerun()
 
-    st.divider()
+    if st.button("Salva ciclo"):
+        c.execute("INSERT OR REPLACE INTO cicli VALUES (?,?)",
+                  (art, "|".join(st.session_state.ciclo_temp)))
+        conn.commit()
+        st.success("Salvato")
 
-    # salvataggio
-    if st.button("💾 Salva ciclo"):
-        if art:
-            c.execute(
-                "INSERT OR REPLACE INTO cicli VALUES (?,?)",
-                (art, "|".join(st.session_state.ciclo_temp))
-            )
-            conn.commit()
-            st.success("Ciclo salvato")
 # ---------------- INSERIMENTO ----------------
 elif menu=="Inserimento":
     st.title("Nuovo lotto")
@@ -311,16 +269,13 @@ elif menu=="Dashboard":
 
     if not df.empty:
         df["giorno"] = df["start"].dt.date
-
         grouped = df.groupby(["giorno","fase"]).agg({"durata":"sum"}).reset_index()
 
         for macchina in grouped["fase"].unique():
             sub = grouped[grouped["fase"]==macchina]
 
             st.subheader(macchina)
-
             fig, ax = plt.subplots()
             ax.bar(sub["giorno"], sub["durata"])
             ax.set_ylabel("minuti lavorazione")
-
             st.pyplot(fig)
