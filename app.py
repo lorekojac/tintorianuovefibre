@@ -147,18 +147,29 @@ else:
 if menu=="Produzione":
     st.title("Produzione")
 
-    for i,r in df.iterrows():
-        col1,col2,col3,col4=st.columns(4)
+    if df.empty:
+        st.info("Nessun lavoro")
+    else:
+        # selezione macchina
+        macchina = st.selectbox("Seleziona macchina", sorted(df["fase"].unique()))
 
-        col1.write(f"{r['lotto']} - {r['cliente']}")
-        col2.write(r["fase"])
-        col3.write(f"{r['start']} → {r['end']}")
-        col4.write(f"{r['durata']} min")
+        # filtro per macchina
+        df_macchina = df[df["fase"] == macchina].sort_values(by="start")
 
-        if st.button(f"Fatto {i}"):
-            c.execute("UPDATE lotti SET fase=fase+1 WHERE id=?", (r["id"],))
-            conn.commit()
-            st.rerun()
+        st.subheader(f"Lavori per: {macchina}")
+
+        for i, r in df_macchina.iterrows():
+            col1, col2, col3, col4 = st.columns([2,2,2,1])
+
+            col1.write(f"**{r['lotto']}**")
+            col2.write(r["cliente"])
+            col3.write(f"{r['start'].strftime('%d/%m %H:%M')} → {r['end'].strftime('%H:%M')}")
+            col4.write(f"{r['durata']} min")
+
+            if st.button(f"Fatto_{r['id']}_{i}"):
+                c.execute("UPDATE lotti SET fase=fase+1 WHERE id=?", (r["id"],))
+                conn.commit()
+                st.rerun()
 
 # ---------------- CALENDARIO ----------------
 elif menu=="Calendario":
