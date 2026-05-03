@@ -152,7 +152,17 @@ else:
     ])
 
 # ---------------- PRODUZIONE ----------------
-if menu=="Produzione":
+# ---------------- MENU ----------------
+if st.session_state.ruolo=="operatore":
+    menu = "Produzione"
+else:
+    menu = st.sidebar.selectbox("Menu",[
+        "Produzione","Gantt","Excel","Inserimento","Cicli","Setup"
+    ])
+
+# ---------------- CONTENUTO ----------------
+
+if menu == "Produzione":
     st.title("Produzione")
 
     if df.empty:
@@ -171,6 +181,58 @@ if menu=="Produzione":
                 c.execute("UPDATE lotti SET fase=fase+1 WHERE id=?", (r["id"],))
                 conn.commit()
                 st.rerun()
+
+elif menu == "Gantt":
+    st.title("Gantt")
+
+    items=[]
+    for _,r in df.iterrows():
+        items.append({
+            "id":r["id"],
+            "content":f"{r['lotto']} - {r['fase']}",
+            "start":str(r["start"]),
+            "end":str(r["end"])
+        })
+
+    html(f"""
+    <div id="timeline"></div>
+    <script src="https://unpkg.com/vis-timeline/standalone/umd/vis-timeline-graph2d.min.js"></script>
+    <link href="https://unpkg.com/vis-timeline/styles/vis-timeline-graph2d.min.css" rel="stylesheet" />
+    <script>
+    var container = document.getElementById('timeline');
+    var items = new vis.DataSet({items});
+    var timeline = new vis.Timeline(container, items, {{
+        editable:true,
+        stack:true
+    }});
+    </script>
+    """, height=500)
+
+elif menu == "Excel":
+    st.title("Export Excel")
+
+    if not df.empty:
+        macchina = st.selectbox("Macchina", sorted(df["fase"].unique()))
+        dfm = df[df["fase"]==macchina].sort_values(by="start")
+
+        st.dataframe(dfm)
+
+        import io
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            dfm.to_excel(writer, index=False)
+
+        st.download_button("Scarica Excel", output.getvalue(), file_name=f"{macchina}.xlsx")
+
+elif menu == "Inserimento":
+    st.title("Nuovo lotto")
+    # 👉 qui rimane il tuo codice inserimento
+
+elif menu == "Cicli":
+    # 👉 QUI INCOLLA IL BLOCCO CICLI PRO CHE TI HO DATO
+
+elif menu == "Setup":
+    st.title("Setup")
 
 # ---------------- GANTT ----------------
 elif menu=="Gantt":
