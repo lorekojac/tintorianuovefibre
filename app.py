@@ -1,202 +1,256 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta
-import os
+import sqlite3
+from datetime import datetime, timedelta, time
+from streamlit.components.v1 import html
 
-st.set_page_config(page_title="Tintoria nuovefibre", layout="wide")
+st.set_page_config(layout="wide", page_title="Tintoria nuovefibre PRO")
 
-# ------------------------
-# CONFIG
-# ------------------------
+# ---------------- CONFIG ----------------
 FASI = [
-    "Bruciapelo",
-    "Sbozzima",
-    "Lavaggio",
-    "Candeggio Vaporizzo",
-    "Mercerizzo",
-    "Sodatrice",
-    "Candeggio Stoccaggio"
+    "Bruciapelo","Sbozzima","Lavaggio",
+    "Candeggio Vaporizzo","Mercerizzo",
+    "Sodatrice","Candeggio Stoccaggio","Ramosa","Leone"
 ]
 
-CAPACITA = {
-    "Bruciapelo": (5,5),
-    "Sbozzima": (5,5),
-    "Lavaggio": (5,5),
-    "Candeggio Vaporizzo": (5,5),
-    "Mercerizzo": (5,5),
-    "Sodatrice": (5,5),
-    "Candeggio Stoccaggio": (5,5),
-}
-
 UTENTI = {
-    "op1": {"password": "op1", "ruolo": "operatore"},
-    "admin1": {"password": "admin1", "ruolo": "admin"},
+    "op1": {"password":"op1","ruolo":"operatore"},
+    "admin1": {"password":"admin1","ruolo":"admin"}
 }
 
-DB_FILE = "lotti.csv"
+DB="tintoria.db"
 
-# ------------------------
-# DB
-# ------------------------
-def load_data():
-    if os.path.exists(DB_FILE):
-        return pd.read_csv(DB_FILE)
-    else:
-        return pd.DataFrame(columns=[
-            "Lotto","Articolo","DataInizio","IndiceFase","Priorità"
-        ])
+# ---------------- DB ----------------
+conn = sqlite3.connect(DB, check_same_thread=False)
+c = conn.cursor()
 
-def save_data(df):
-    df.to_csv(DB_FILE, index=False)
+c.execute("""
+CREATE TABLE IF NOT EXISTS lotti(
+id INTEGER PRIMARY KEY,
+lotto TEXT,
+articolo TEXT,
+cliente TEXT,
+metri REAL,
+data TEXT,
+fase INT,
+priorita TEXT
+)
+""")
 
-df = load_data()
+c.execute("""
+CREATE TABLE IF NOT EXISTS macchine(
+nome TEXT PRIMARY KEY,
+velocita REAL,
+setup INT
+)
+""")
 
-# ------------------------
-# LOGIN
-# ------------------------
-if "logged" not in st.session_state:
-    st.session_state.logged = False
+c.execute("""
+CREATE TABLE IF NOT EXISTS turni(
+nome TEXT PRIMARY KEY,
+start TEXT,
+end TEXT
+)
+""")
 
-if not st.session_state.logged:
-    st.title("Login Tintoria nuovefibre")
+c.execute("""
+CREATE TABLE IF NOT EXISTS pause(
+nome TEXT PRIMARY KEY,
+start TEXT,
+end TEXT
+)
+""")
 
-    user = st.text_input("Utente")
-    pwd = st.text_input("Password", type="password")
+conn.commit()
 
-    if st.button("Login"):
-        if user in UTENTI and UTENTI[user]["password"] == pwd:
-            st.session_state.logged = True
-            st.session_state.user = user
-            st.session_state.ruolo = UTENTI[user]["ruolo"]
-            st.rerun()
-        else:
-            st.error("Credenziali errate")
+# default macchine
+for f in FASI:
+    c.execute("INSERT OR IGNORE INTO macchine VALUES (?,?,?)",(f,20,10))
 
-    st.stop()
+# default turni
+c.execute("INSERT OR IGNORE INTO turni VALUES ('T1','06:00','14:00')")
+c.execute("INSERT OR IGNORE INTO turni VALUES ('T2','14:00','22:00')")
 
-# ------------------------
-# HEADER
-# ------------------------
-st.sidebar.write(f"👤 {st.session_state.user}")
-menu = st.sidebar.selectbox("Menu", ["Produzione","Macchine","Inserimento"])
+# pausa
+c.execute("INSERT OR IGNORE INTO pause VALUES ('Pranzo','12:00','13:00')")
 
-# ------------------------
-# CALCOLI
-# ------------------------
-def calcola(df):
+conn.commit()
+
+# ---------------- UTILS TEMPO ----------------
+def in_pausa(dt):
+    pause = pd.read_sql("SELECT * FROM pause", conn)
+    for _,p in pause.iterrows():
+        s = datetime.combine(dt.date(), datetime.strptime(p["start"],"%H:%M").time())
+        e = datetime.combine(dt.date(), datetime.strptime(p["end"],"%H:%M").time())
+        if s <= dt < e:
+            return True, e
+    return False, dt
+
+def prossimo_turno(dt):
+    turni = pd.read_sql("SELECT * FROM turni", conn)
+    for _,t in turni.iterrows():
+        s = datetime.combine(dt.date(), datetime.strptime(t["start"],"%H:%M").time())
+        e = datetime.combine(dt.date(), datetime.strptime(t["end"],"%H:%M").time())
+        if s <= dt < e:
+            return dt
+    # vai al giorno dopo primo turno
+    t0 = turni.iloc[0]
+    return datetime.combine(dt.date()+timedelta(days=1), datetime.strptime(t0["start"],"%H:%M").time())
+
+def aggiungi_tempo(start, durata_min):
+    corrente = start
+    minuti = durata_min
+
+    while minuti > 0:
+        corrente = prossimo_turno(corrente)
+
+        pausa, fine_pausa = in_pausa(corrente)
+        if pausa:
+            corrente = fine_pausa
+            continue
+
+        corrente += timedelta(minutes=1)
+        minuti -= 1
+
+    return corrente
+
+# ---------------- LOAD ----------------
+def load():
+    df = pd.read_sql("SELECT * FROM lotti", conn)
     if df.empty:
         return df
 
-    df = df.copy()
+    mac = pd.read_sql("SELECT * FROM macchine", conn)
 
-    df["Fase"] = df["IndiceFase"].apply(
-        lambda x: FASI[x] if x < len(FASI) else "Finito"
-    )
+    records=[]
 
-    df["Data Fase"] = df.apply(
-        lambda r: pd.to_datetime(r["DataInizio"]) + timedelta(days=int(r["IndiceFase"])),
-        axis=1
-    )
+    for _,r in df.iterrows():
+        start = pd.to_datetime(r["data"])
 
-    # priorità ordinata
-    ordine_priorita = {"Urgente":0,"Alta":1,"Normale":2}
-    df["Ord"] = df["Priorità"].map(ordine_priorita)
+        for i in range(r["fase"], len(FASI)):
+            fase = FASI[i]
 
-    df = df.sort_values(by=["Data Fase","Ord"])
+            m = mac[mac["nome"]==fase]
+            vel = float(m["velocita"].values[0])
+            setup = int(m["setup"].values[0])
 
-    # assegna turni
-    df["Turno"] = ""
-    df["Over"] = ""
+            durata = (r["metri"]/vel) + setup
 
-    for (data, macchina), group in df.groupby(["Data Fase","Fase"]):
-        if macchina == "Finito":
-            continue
+            end = aggiungi_tempo(start, durata)
 
-        cap1, cap2 = CAPACITA.get(macchina,(5,5))
+            records.append({
+                "id":r["id"],
+                "lotto":r["lotto"],
+                "cliente":r["cliente"],
+                "fase":fase,
+                "start":start,
+                "end":end,
+                "durata":round(durata,1),
+                "priorita":r["priorita"]
+            })
 
-        for i, idx in enumerate(group.index):
-            if i < cap1:
-                df.at[idx,"Turno"] = "1"
-            elif i < cap1 + cap2:
-                df.at[idx,"Turno"] = "2"
-            else:
-                df.at[idx,"Turno"] = "OVER"
+            start = end
 
-    return df
+    return pd.DataFrame(records)
 
-df_calc = calcola(df)
+# ---------------- LOGIN ----------------
+if "login" not in st.session_state:
+    st.session_state.login=False
 
-# ------------------------
-# INSERIMENTO
-# ------------------------
-if menu == "Inserimento" and st.session_state.ruolo == "admin":
-    st.subheader("➕ Nuovo Lotto")
+if not st.session_state.login:
+    st.title("Login")
 
-    lotto = st.text_input("Lotto")
-    articolo = st.text_input("Articolo")
-    data = st.date_input("Data Inizio", datetime.today())
-    priorita = st.selectbox("Priorità", ["Normale","Alta","Urgente"])
+    u=st.text_input("Utente")
+    p=st.text_input("Password", type="password")
 
-    if st.button("Inserisci"):
-        new = pd.DataFrame([{
-            "Lotto": lotto,
-            "Articolo": articolo,
-            "DataInizio": data,
-            "IndiceFase": 0,
-            "Priorità": priorita
-        }])
+    if st.button("Login"):
+        if u in UTENTI and UTENTI[u]["password"]==p:
+            st.session_state.login=True
+            st.session_state.user=u
+            st.rerun()
+        else:
+            st.error("Errore")
 
-        df = pd.concat([df, new], ignore_index=True)
-        save_data(df)
-        st.success("Inserito!")
+    st.stop()
+
+df = load()
+
+menu = st.sidebar.selectbox("Menu",[
+    "Produzione","Gantt","Inserimento","Setup"
+])
+
+# ---------------- INSERIMENTO ----------------
+if menu=="Inserimento":
+    st.title("Nuovo Lotto")
+
+    lotto=st.text_input("Lotto")
+    art=st.text_input("Articolo")
+    cliente=st.text_input("Cliente")
+    metri=st.number_input("Metri", value=1000)
+    data=st.date_input("Data", datetime.today())
+
+    if st.button("Salva"):
+        c.execute("INSERT INTO lotti VALUES(NULL,?,?,?,?,?,?,?)",
+                  (lotto,art,cliente,metri,str(data),0,"Normale"))
+        conn.commit()
+        st.success("Inserito")
         st.rerun()
 
-# ------------------------
-# PRODUZIONE
-# ------------------------
-elif menu == "Produzione":
-    st.subheader("📅 Produzione")
+# ---------------- PRODUZIONE ----------------
+elif menu=="Produzione":
+    st.title("Produzione")
 
-    giorni = st.slider("Giorni futuri", 0, 10, 2)
+    for i,r in df.iterrows():
+        col1,col2,col3,col4=st.columns(4)
 
-    oggi = datetime.today()
-    limite = oggi + timedelta(days=giorni)
+        col1.write(f"**{r['lotto']}**")
+        col2.write(r["fase"])
+        col3.write(f"{r['start']} → {r['end']}")
+        col4.write(f"{r['durata']} min")
 
-    df_view = df_calc[
-        (df_calc["Data Fase"] >= pd.to_datetime(oggi)) &
-        (df_calc["Data Fase"] <= pd.to_datetime(limite))
-    ]
-
-    for i, r in df_view.iterrows():
-        col1,col2,col3,col4,col5 = st.columns([2,2,2,1,1])
-
-        col1.write(f"**{r['Lotto']}**")
-        col2.write(r["Fase"])
-        col3.write(r["Data Fase"].date())
-        col4.write(f"T{r['Turno']}")
-        col5.write(r["Priorità"])
-
-        if r["Fase"] != "Finito":
-            if st.button(f"Fatto {i}"):
-                df.at[i,"IndiceFase"] += 1
-                save_data(df)
-                st.rerun()
-
-        if st.button(f"Urg {i}"):
-            df.at[i,"Priorità"] = "Urgente"
-            save_data(df)
+        if st.button(f"Fatto {i}"):
+            c.execute("UPDATE lotti SET fase=fase+1 WHERE id=?", (r["id"],))
+            conn.commit()
             st.rerun()
 
-# ------------------------
-# MACCHINE
-# ------------------------
-elif menu == "Macchine":
-    st.subheader("⚙️ Vista Macchine")
+# ---------------- GANTT ----------------
+elif menu=="Gantt":
+    st.title("Gantt")
 
-    macchina = st.selectbox("Macchina", FASI)
+    items=[]
+    for _,r in df.iterrows():
+        items.append({
+            "content":r["lotto"],
+            "start":str(r["start"]),
+            "end":str(r["end"])
+        })
 
-    df_m = df_calc[df_calc["Fase"] == macchina]
+    html(f"""
+    <div id="timeline"></div>
+    <script src="https://unpkg.com/vis-timeline/standalone/umd/vis-timeline-graph2d.min.js"></script>
+    <link href="https://unpkg.com/vis-timeline/styles/vis-timeline-graph2d.min.css" rel="stylesheet" />
 
-    st.dataframe(df_m[[
-        "Lotto","Data Fase","Turno","Priorità"
-    ]])
+    <script>
+    var container = document.getElementById('timeline');
+    var items = new vis.DataSet({items});
+    var timeline = new vis.Timeline(container, items, {{stack:true}});
+    </script>
+    """, height=500)
+
+# ---------------- SETUP ----------------
+elif menu=="Setup":
+    st.title("Setup Macchine")
+
+    mac = pd.read_sql("SELECT * FROM macchine", conn)
+
+    for i,r in mac.iterrows():
+        col1,col2,col3=st.columns(3)
+        col1.write(r["nome"])
+        vel=col2.number_input("m/min", value=float(r["velocita"]), key=f"v{i}")
+        setup=col3.number_input("setup min", value=int(r["setup"]), key=f"s{i}")
+
+        if st.button(f"Salva {r['nome']}"):
+            c.execute("UPDATE macchine SET velocita=?,setup=? WHERE nome=?",
+                      (vel,setup,r["nome"]))
+            conn.commit()
+            st.success("Salvato")
