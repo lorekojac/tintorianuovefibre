@@ -201,20 +201,46 @@ elif menu=="Cicli":
 
     art = st.text_input("Articolo")
 
-    ciclo_attuale = get_ciclo(art)
+    # recupera ciclo attuale
+    ciclo_attuale = get_ciclo(art) if art else []
 
-    selezione = st.multiselect(
-        "Macchine",
-        FASI,
-        default=ciclo_attuale
-    )
+    st.subheader("Ciclo attuale")
 
-    if st.button("Salva ciclo"):
-        c.execute("INSERT OR REPLACE INTO cicli VALUES (?,?)",
-                  (art, "|".join(selezione)))
-        conn.commit()
-        st.success("Salvato")
+    if "ciclo_temp" not in st.session_state:
+        st.session_state.ciclo_temp = ciclo_attuale.copy()
 
+    # reset quando cambia articolo
+    if art and ciclo_attuale != st.session_state.ciclo_temp:
+        st.session_state.ciclo_temp = ciclo_attuale.copy()
+
+    # mostra ciclo corrente
+    for i, fase in enumerate(st.session_state.ciclo_temp):
+        col1, col2 = st.columns([4,1])
+        col1.write(f"{i+1}. {fase}")
+        if col2.button(f"❌_{i}"):
+            st.session_state.ciclo_temp.pop(i)
+            st.rerun()
+
+    st.divider()
+
+    st.subheader("Aggiungi fase")
+
+    nuova_fase = st.selectbox("Macchina", FASI)
+
+    if st.button("➕ Aggiungi"):
+        st.session_state.ciclo_temp.append(nuova_fase)
+        st.rerun()
+
+    st.divider()
+
+    if st.button("💾 Salva ciclo"):
+        if art and st.session_state.ciclo_temp:
+            c.execute(
+                "INSERT OR REPLACE INTO cicli VALUES (?,?)",
+                (art, "|".join(st.session_state.ciclo_temp))
+            )
+            conn.commit()
+            st.success("Ciclo salvato")
 # ---------------- INSERIMENTO ----------------
 elif menu=="Inserimento":
     st.title("Nuovo lotto")
