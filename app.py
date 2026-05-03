@@ -59,7 +59,6 @@ conn.commit()
 # default macchine
 for f in FASI:
     c.execute("INSERT OR IGNORE INTO macchine VALUES (?,?,?)",(f,20,10))
-
 conn.commit()
 
 # ---------------- FUNZIONI ----------------
@@ -68,6 +67,11 @@ def get_ciclo(art):
     if r and r[0]:
         return r[0].split("|")
     return []
+
+def save_ciclo(art, ciclo_list):
+    c.execute("INSERT OR REPLACE INTO cicli VALUES (?,?)",
+              (art, "|".join(ciclo_list)))
+    conn.commit()
 
 def load():
     df = pd.read_sql("SELECT * FROM lotti", conn)
@@ -80,7 +84,6 @@ def load():
     for _,r in df.iterrows():
         start = pd.to_datetime(r["data"])
         ciclo = get_ciclo(r["articolo"])
-
         if not ciclo:
             continue
 
@@ -104,7 +107,6 @@ def load():
                 "end":end,
                 "durata":round(durata,1)
             })
-
             start = end
 
     return pd.DataFrame(records)
@@ -115,7 +117,6 @@ if "login" not in st.session_state:
 
 if not st.session_state.login:
     st.title("Login")
-
     u=st.text_input("Utente")
     p=st.text_input("Password", type="password")
 
@@ -127,7 +128,6 @@ if not st.session_state.login:
             st.rerun()
         else:
             st.error("Errore")
-
     st.stop()
 
 df = load()
@@ -152,7 +152,6 @@ if menu=="Produzione":
 
         for i,r in df_mac.iterrows():
             col1,col2,col3,col4=st.columns(4)
-
             col1.write(f"{r['lotto']} - {r['cliente']}")
             col2.write(r["fase"])
             col3.write(f"{r['start'].strftime('%d/%m %H:%M')} → {r['end'].strftime('%H:%M')}")
@@ -186,47 +185,101 @@ elif menu=="Calendario":
     </script>
     """, height=500)
 
-# ---------------- CICLI ----------------
+# ---------------- CICLI AVANZATO ----------------
 elif menu=="Cicli":
-    st.title("Cicli articoli")
+    st.title("Editor cicli avanzato")
 
     articoli = pd.read_sql("SELECT articolo FROM cicli", conn)["articolo"].tolist()
     art = st.text_input("Articolo")
 
+    # stato
     if "ciclo_temp" not in st.session_state:
-        st.session_state.ciclo_temp = []
+        st.session_state.ciclo_temp=[]
+        st.session_state.art_corr=None
 
-    if art not in articoli:
-        st.session_state.ciclo_temp = []
+    # cambio articolo
+    if art != st.session_state.art_corr:
+        st.session_state.art_corr = art
+        if art in articoli:
+            st.session_state.ciclo_temp = get_ciclo(art)
+        else:
+            st.session_state.ciclo_temp = []
+
+    # -------- TABELLA --------
+    st.subheader("Ciclo")
+    if st.session_state.ciclo_temp:
+        df_ciclo = pd.DataFrame({
+            "Ordine": range(1,len(st.session_state.ciclo_temp)+1),
+            "Fase": st.session_state.ciclo_temp
+        })
+        st.dataframe(df_ciclo, use_container_width=True)
     else:
-        st.session_state.ciclo_temp = get_ciclo(art)
+        st.info("Ciclo vuoto")
 
-    st.subheader("Ciclo (drag & drop)")
+    st.divider()
+
+    # -------- DRAG --------
+    st.subheader("Riordina (drag)")
     if st.session_state.ciclo_temp:
         st.session_state.ciclo_temp = sort_items(st.session_state.ciclo_temp)
 
-    nuova = st.selectbox("Aggiungi macchina", FASI)
-    if st.button("➕"):
-        st.session_state.ciclo_temp.append(nuova)
+    st.divider()
+
+    # -------- AGGIUNTA POSIZIONE --------
+    st.subheader("Inserisci fase")
+
+    colA, colB = st.columns(2)
+    nuova = colA.selectbox("Macchina", FASI)
+    pos = colB.number_input("Posizione (1 = inizio)", min_value=1,
+                           max_value=len(st.session_state.ciclo_temp)+1,
+                           value=len(st.session_state.ciclo_temp)+1)
+
+    if st.button("➕ Inserisci"):
+        st.session_state.ciclo_temp.insert(int(pos)-1, nuova)
         st.rerun()
 
-    if st.button("❌ rimuovi ultima"):
-        if st.session_state.ciclo_temp:
-            st.session_state.ciclo_temp.pop()
+    # -------- MODIFICA --------
+    st.subheader("Modifica fase")
+
+    if st.session_state.ciclo_temp:
+        idx = st.number_input("Indice fase", min_value=1,
+                              max_value=len(st.session_state.ciclo_temp), value=1)
+        nuova_val = st.selectbox("Nuova fase", FASI, key="editfase")
+
+        if st.button("✏️ Modifica"):
+            st.session_state.ciclo_temp[int(idx)-1] = nuova_val
             st.rerun()
 
+    # -------- RIMOZIONE --------
+    st.subheader("Rimuovi fase")
+    if st.session_state.ciclo_temp:
+        idx_del = st.number_input("Indice da eliminare",
+                                 min_value=1,
+                                 max_value=len(st.session_state.ciclo_temp), value=1,
+                                 key="del")
+
+        if st.button("❌ Elimina"):
+            st.session_state.ciclo_temp.pop(int(idx_del)-1)
+            st.rerun()
+
+    st.divider()
+
+    # -------- COPIA --------
     st.subheader("Copia ciclo")
     copia = st.selectbox("Da articolo", [""]+articoli)
-    if st.button("Copia"):
+
+    if st.button("📥 Copia"):
         if copia:
             st.session_state.ciclo_temp = get_ciclo(copia)
             st.rerun()
 
-    if st.button("Salva ciclo"):
-        c.execute("INSERT OR REPLACE INTO cicli VALUES (?,?)",
-                  (art, "|".join(st.session_state.ciclo_temp)))
-        conn.commit()
-        st.success("Salvato")
+    st.divider()
+
+    # -------- SALVA --------
+    if st.button("💾 Salva ciclo"):
+        if art:
+            save_ciclo(art, st.session_state.ciclo_temp)
+            st.success("Salvato")
 
 # ---------------- INSERIMENTO ----------------
 elif menu=="Inserimento":
@@ -273,9 +326,8 @@ elif menu=="Dashboard":
 
         for macchina in grouped["fase"].unique():
             sub = grouped[grouped["fase"]==macchina]
-
             st.subheader(macchina)
             fig, ax = plt.subplots()
             ax.bar(sub["giorno"], sub["durata"])
-            ax.set_ylabel("minuti lavorazione")
+            ax.set_ylabel("minuti")
             st.pyplot(fig)
