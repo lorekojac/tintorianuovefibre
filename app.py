@@ -12,11 +12,12 @@ FASI = [
     "Bruciapelo","Sbozzima","Lavaggio",
     "Candeggio Vaporizzo","Mercerizzo",
     "Sodatrice","Candeggio Stoccaggio","Ramosa"
+    "Smeriglio","Artex","spazzola"
 ]
 
 UTENTI = {
-    "op1": {"password":"op1","ruolo":"operatore"},
-    "admin1": {"password":"admin1","ruolo":"admin"}
+    "Op1": {"password":"op1","ruolo":"operatore"},
+    "Admin1": {"password":"admin1","ruolo":"admin"}
 }
 
 DB="tintoria.db"
