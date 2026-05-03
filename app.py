@@ -268,28 +268,89 @@ elif menu=="Inserimento":
 
 # ---------------- CICLI ----------------
 elif menu=="Cicli":
-    st.title("Editor cicli")
+    st.title("Editor cicli avanzato")
+
+    # articoli esistenti
+    articoli = pd.read_sql("SELECT articolo FROM cicli", conn)["articolo"].tolist()
 
     art = st.text_input("Articolo")
 
-    if "ciclo" not in st.session_state:
-        st.session_state.ciclo=[]
+    # stato persistente
+    if "ciclo_temp" not in st.session_state:
+        st.session_state.ciclo_temp = []
+        st.session_state.art_corrente = None
 
-    if art:
-        st.session_state.ciclo=get_ciclo(art)
+    # cambio articolo → carica ciclo o vuoto
+    if art != st.session_state.art_corrente:
+        st.session_state.art_corrente = art
 
-    st.write(st.session_state.ciclo)
+        if art in articoli:
+            st.session_state.ciclo_temp = get_ciclo(art)
+        else:
+            st.session_state.ciclo_temp = []
 
-    nuova=st.selectbox("Fase", FASI)
-    if st.button("Aggiungi"):
-        st.session_state.ciclo.append(nuova)
+    # ---------------- VISUALIZZAZIONE ----------------
+    st.subheader("Fasi di lavorazione")
+
+    if st.session_state.ciclo_temp:
+        df_ciclo = pd.DataFrame({
+            "Ordine": range(1, len(st.session_state.ciclo_temp)+1),
+            "Fase": st.session_state.ciclo_temp
+        })
+        st.dataframe(df_ciclo, use_container_width=True)
+    else:
+        st.info("Nessuna fase inserita")
+
+    st.divider()
+
+    # ---------------- DRAG & DROP ----------------
+    st.subheader("Riordina (drag & drop)")
+
+    if st.session_state.ciclo_temp:
+        nuovo = sort_items(st.session_state.ciclo_temp)
+        st.session_state.ciclo_temp = nuovo
+
+    st.divider()
+
+    # ---------------- AGGIUNTA ----------------
+    st.subheader("Aggiungi fase")
+
+    nuova = st.selectbox("Macchina", FASI)
+
+    if st.button("➕ Aggiungi"):
+        st.session_state.ciclo_temp.append(nuova)
         st.rerun()
 
-    if st.button("Salva"):
-        c.execute("INSERT OR REPLACE INTO cicli VALUES (?,?)",
-                  (art,"|".join(st.session_state.ciclo)))
-        conn.commit()
-        st.success("Salvato")
+    # ---------------- RIMOZIONE ----------------
+    if st.button("❌ Rimuovi ultima"):
+        if st.session_state.ciclo_temp:
+            st.session_state.ciclo_temp.pop()
+            st.rerun()
+
+    st.divider()
+
+    # ---------------- COPIA ----------------
+    st.subheader("Copia ciclo da altro articolo")
+
+    copia = st.selectbox("Seleziona articolo", [""] + articoli)
+
+    if st.button("📥 Copia ciclo"):
+        if copia:
+            st.session_state.ciclo_temp = get_ciclo(copia)
+            st.success(f"Ciclo copiato da {copia}")
+            st.rerun()
+
+    st.divider()
+
+    # ---------------- SALVATAGGIO ----------------
+    if st.button("💾 Salva ciclo"):
+        if art:
+            c.execute(
+                "INSERT OR REPLACE INTO cicli VALUES (?,?)",
+                (art, "|".join(st.session_state.ciclo_temp))
+            )
+            conn.commit()
+            st.success("Ciclo salvato")
 
 # ---------------- SETUP ----------------
 elif menu=="Setup":
